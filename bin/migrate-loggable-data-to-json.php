@@ -27,7 +27,7 @@ declare(strict_types=1);
  *   ALTER TABLE <table> DROP COLUMN data_serialized;
  *
  * Usage:
- *   php tools/migrate-loggable-data-to-json.php --dsn="mysql://user:pass@host/db" [--table="ext_log_entries"] [--batch-size=500] [--drop-legacy]
+ *   php bin/migrate-loggable-data-to-json.php --dsn="mysql://user:pass@host/db" [--table="ext_log_entries"] [--batch-size=500] [--drop-legacy]
  *
  * Options:
  *   --dsn          DBAL-compatible DSN string (required).
@@ -64,7 +64,7 @@ $options = getopt('', ['dsn:', 'table::', 'batch-size::', 'drop-legacy']);
 
 $dsn = $options['dsn'] ?? null;
 if (null === $dsn) {
-    fwrite(STDERR, "Error: --dsn is required.\n\nUsage:\n  php tools/migrate-loggable-data-to-json.php --dsn=\"mysql://user:pass@host/db\" [--table=ext_log_entries] [--batch-size=500] [--drop-legacy]\n");
+    fwrite(STDERR, "Error: --dsn is required.\n\nUsage:\n  php bin/migrate-loggable-data-to-json.php --dsn=\"mysql://user:pass@host/db\" [--table=ext_log_entries] [--batch-size=500] [--drop-legacy]\n");
     exit(1);
 }
 
