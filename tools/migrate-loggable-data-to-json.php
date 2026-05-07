@@ -225,8 +225,8 @@ function convertRows(
                 continue;
             }
 
-            // Suppress warnings; handle errors explicitly.
-            $deserialized = @unserialize($serialized, ['allowed_classes' => false]);
+            // Attempt to unserialize; if it fails the value is not valid PHP serialization.
+            $deserialized = unserialize($serialized, ['allowed_classes' => false]);
 
             if (false === $deserialized && 'b:0;' !== $serialized) {
                 fwrite(STDERR, sprintf(
@@ -286,17 +286,19 @@ function migrateViaSqliteRecreate(
 
     // Create a temporary table named $tmpTable.
     // Replace only the table name in the CREATE TABLE header (first occurrence).
+    // The pattern restricts unquoted identifiers to valid SQLite identifier characters.
     $tmpCreate = preg_replace(
-        '/^(CREATE\s+TABLE\s+)((?:"[^"]*"|`[^`]*`|\[[^\]]*\]|\S+))(\s*\()/i',
+        '/^(CREATE\s+TABLE\s+)((?:"[^"]*"|`[^`]*`|\[[^\]]*\]|[a-zA-Z_][a-zA-Z0-9_]*))(\s*\()/i',
         '$1'.$quotedTmp.'$3',
         $createSql,
         1
     );
 
     // Rename the `data` column definition to `data_serialized` in the DDL.
-    // Match only a quoted or unquoted column named exactly "data" at the start of a column definition.
+    // Match the column name exactly – either quoted or as a standalone identifier
+    // not followed by alphanumeric characters (to avoid matching e.g. "data_type").
     $tmpCreate = preg_replace(
-        '/(?<=\(|,)\s*("data"|`data`|\bdata\b)(?=\s)/i',
+        '/(?<=\(|,)\s*("data"|`data`|\[data\]|(?<![a-zA-Z0-9_])data(?![a-zA-Z0-9_]))(?=\s)/i',
         ' "data_serialized"',
         $tmpCreate,
         1
@@ -305,7 +307,8 @@ function migrateViaSqliteRecreate(
     $connection->executeStatement($tmpCreate);
 
     // Copy all data into the temporary table.
-    $cols = $connection->fetchAllAssociative(sprintf('PRAGMA table_info(%s)', $quotedTable));
+    // Note: SQLite's PRAGMA table_info requires an unquoted table name.
+    $cols = $connection->fetchAllAssociative(sprintf('PRAGMA table_info(%s)', $table));
     $colList = implode(', ', array_map(
         static fn (array $c) => $platform->quoteSingleIdentifier($c['name']),
         $cols
@@ -337,7 +340,7 @@ function migrateViaSqliteRecreate(
     );
     $converted = 0;
     foreach ($rows as $row) {
-        $deserialized = @unserialize($row['data_serialized'], ['allowed_classes' => false]);
+        $deserialized = unserialize($row['data_serialized'], ['allowed_classes' => false]);
         if (false !== $deserialized || 'b:0;' === $row['data_serialized']) {
             try {
                 $json = json_encode($deserialized, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
