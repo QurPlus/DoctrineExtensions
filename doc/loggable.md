@@ -259,15 +259,24 @@ The project provides a standalone migration script at `bin/migrate-loggable-data
 1. Renames the existing `data` column to `data_serialized` (so no existing data is lost).
 2. Adds a new `data` column with a JSON-compatible type.
 3. Reads each row, calls `unserialize()` on the old value and `json_encode()` on the result, and writes it into the new column.
-4. After verifying the migration, you can manually drop the `data_serialized` column.
+4. Optionally drops the `data_serialized` backup column automatically when `--drop-legacy` is passed. Without this flag the column is kept so you can verify the migration manually before dropping it.
 
 ### Usage
 
 ```bash
 php bin/migrate-loggable-data-to-json.php \
     --dsn="mysql://user:password@localhost/mydb" \
-    --table="ext_log_entries"
+    --table="ext_log_entries" \
+    [--batch-size=500] \
+    [--drop-legacy]
 ```
+
+| Option | Description |
+|---|---|
+| `--dsn` | DBAL-compatible DSN string (**required**). |
+| `--table` | Name of the log entry table (default: `ext_log_entries`). |
+| `--batch-size` | Number of rows to process per database round-trip (default: `500`). |
+| `--drop-legacy` | Drop the `data_serialized` backup column automatically after a successful migration. Omit this flag if you want to keep the backup column for manual verification first. |
 
 > [!NOTE]
 > Run this script **before** updating the entity mapping to use the `json` type and before upgrading to DBAL 4.
