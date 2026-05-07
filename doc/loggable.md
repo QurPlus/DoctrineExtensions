@@ -254,7 +254,7 @@ $repo->revert($article, 2);
 If you have an existing `ext_log_entries` table (or a custom log entry table) with data stored in the old
 PHP `serialize()` format, you need to migrate it to JSON before using `doctrine/dbal` 4.0 or later.
 
-The project provides a standalone migration script at `bin/migrate-loggable-data-to-json.php`. The script:
+The project provides a standalone migration script at `tools/migrate-loggable-data-to-json.php`. The script:
 
 1. Renames the existing `data` column to `data_serialized` (so no existing data is lost).
 2. Adds a new `data` column with a JSON-compatible type.
@@ -264,7 +264,7 @@ The project provides a standalone migration script at `bin/migrate-loggable-data
 ### Usage
 
 ```bash
-php bin/migrate-loggable-data-to-json.php \
+php tools/migrate-loggable-data-to-json.php \
     --dsn="mysql://user:password@localhost/mydb" \
     --table="ext_log_entries"
 ```
