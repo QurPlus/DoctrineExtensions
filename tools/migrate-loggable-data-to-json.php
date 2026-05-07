@@ -92,6 +92,9 @@ $schemaManager = method_exists($connection, 'createSchemaManager')
     ? $connection->createSchemaManager()
     : $connection->getSchemaManager(); // DBAL 3 compat
 
+// Quoted table identifier, safe for use in raw SQL.
+$quotedTable = $platform->quoteSingleIdentifier($table);
+
 // ---------------------------------------------------------------------------
 // Detect the existing columns on the table.
 // ---------------------------------------------------------------------------
@@ -107,30 +110,33 @@ if (!$hasData && !$hasDataSerialized) {
 }
 
 // ---------------------------------------------------------------------------
+// Detect the database platform for platform-specific DDL.
+// ---------------------------------------------------------------------------
+$platformName = strtolower(get_class($platform));
+$isSqlite = str_contains($platformName, 'sqlite');
+
+// ---------------------------------------------------------------------------
 // Step 1 – Rename data → data_serialized (skip if already done).
 // ---------------------------------------------------------------------------
 if ($hasData && !$hasDataSerialized) {
     echo "Step 1: Renaming column 'data' to 'data_serialized' in table '{$table}'...\n";
 
-    $renameSql = $platform->getAlterTableSQL(
-        (new \Doctrine\DBAL\Schema\TableDiff($table))
-    );
-
-    // Use raw SQL for maximum compatibility across drivers.
-    $driver = $connection->getDriver();
-    $driverName = strtolower((string) $driver->getDatabasePlatform($connection->getServerVersion())->getName());
-
-    if (str_contains($driverName, 'sqlite')) {
+    if ($isSqlite) {
         // SQLite does not support RENAME COLUMN before version 3.25.0; use recreate workaround.
-        migrateViaSqliteRecreate($connection, $table);
-        // After this helper the table already has data_serialized + data (JSON) columns.
-        // Jump straight to step 3 (data already migrated inside helper).
-        finalize($connection, $table, $dropLegacy);
+        migrateViaSqliteRecreate($connection, $platform, $table, $quotedTable);
+        // After this helper the table already has data_serialized + data (JSON) columns
+        // and data has been converted. Jump straight to finalize.
+        finalize($connection, $platform, $table, $quotedTable, $dropLegacy);
         exit(0);
     }
 
-    // MySQL / MariaDB / PostgreSQL
-    $connection->executeStatement(sprintf('ALTER TABLE %s RENAME COLUMN data TO data_serialized', $table));
+    // MySQL / MariaDB / PostgreSQL support RENAME COLUMN directly.
+    $connection->executeStatement(sprintf(
+        'ALTER TABLE %s RENAME COLUMN %s TO %s',
+        $quotedTable,
+        $platform->quoteSingleIdentifier('data'),
+        $platform->quoteSingleIdentifier('data_serialized')
+    ));
     echo "  Done.\n";
 } elseif ($hasDataSerialized && !$hasData) {
     echo "Step 1: Column 'data_serialized' already exists; skipping rename.\n";
@@ -144,8 +150,15 @@ if ($hasData && !$hasDataSerialized) {
 // ---------------------------------------------------------------------------
 $columnsAfterRename = array_keys($schemaManager->listTableColumns($table));
 if (!in_array('data', $columnsAfterRename, true)) {
-    echo "Step 2: Adding new 'data' column (JSON/LONGTEXT) to table '{$table}'...\n";
-    $connection->executeStatement(sprintf('ALTER TABLE %s ADD COLUMN data LONGTEXT DEFAULT NULL', $table));
+    echo "Step 2: Adding new 'data' column to table '{$table}'...\n";
+    // Use the platform's CLOB declaration (TEXT/LONGTEXT/etc.) for the JSON column.
+    $clobType = $platform->getClobTypeDeclarationSQL([]);
+    $connection->executeStatement(sprintf(
+        'ALTER TABLE %s ADD COLUMN %s %s DEFAULT NULL',
+        $quotedTable,
+        $platform->quoteSingleIdentifier('data'),
+        $clobType
+    ));
     echo "  Done.\n";
 } else {
     echo "Step 2: Column 'data' already exists; skipping ADD COLUMN.\n";
@@ -155,13 +168,13 @@ if (!in_array('data', $columnsAfterRename, true)) {
 // Step 3 – Convert rows: unserialize → json_encode.
 // ---------------------------------------------------------------------------
 echo "Step 3: Converting serialized data to JSON...\n";
-$converted = convertRows($connection, $table, $batchSize);
+$converted = convertRows($connection, $platform, $table, $quotedTable, $batchSize);
 echo sprintf("  Converted %d row(s).\n", $converted);
 
 // ---------------------------------------------------------------------------
 // Finalize (optionally drop legacy column).
 // ---------------------------------------------------------------------------
-finalize($connection, $table, $dropLegacy);
+finalize($connection, $platform, $table, $quotedTable, $dropLegacy);
 exit(0);
 
 // ---------------------------------------------------------------------------
@@ -174,14 +187,32 @@ exit(0);
  *
  * @return int Number of rows converted.
  */
-function convertRows(\Doctrine\DBAL\Connection $connection, string $table, int $batchSize): int
-{
+function convertRows(
+    \Doctrine\DBAL\Connection $connection,
+    \Doctrine\DBAL\Platforms\AbstractPlatform $platform,
+    string $table,
+    string $quotedTable,
+    int $batchSize
+): int {
     $converted = 0;
     $offset = 0;
 
+    $qData = $platform->quoteSingleIdentifier('data');
+    $qDataSerialized = $platform->quoteSingleIdentifier('data_serialized');
+    $qId = $platform->quoteSingleIdentifier('id');
+
     while (true) {
         $rows = $connection->fetchAllAssociative(
-            sprintf('SELECT id, data_serialized FROM %s WHERE data_serialized IS NOT NULL AND data IS NULL LIMIT %d OFFSET %d', $table, $batchSize, $offset)
+            sprintf(
+                'SELECT %s, %s FROM %s WHERE %s IS NOT NULL AND %s IS NULL LIMIT %d OFFSET %d',
+                $qId,
+                $qDataSerialized,
+                $quotedTable,
+                $qDataSerialized,
+                $qData,
+                $batchSize,
+                $offset
+            )
         );
 
         if ([] === $rows) {
@@ -217,7 +248,7 @@ function convertRows(\Doctrine\DBAL\Connection $connection, string $table, int $
             }
 
             $connection->executeStatement(
-                sprintf('UPDATE %s SET data = ? WHERE id = ?', $table),
+                sprintf('UPDATE %s SET %s = ? WHERE %s = ?', $quotedTable, $qData, $qId),
                 [$json, $row['id']]
             );
             ++$converted;
@@ -233,9 +264,14 @@ function convertRows(\Doctrine\DBAL\Connection $connection, string $table, int $
  * SQLite-specific workaround for renaming a column: recreate the table.
  * This also performs the data conversion in a single pass.
  */
-function migrateViaSqliteRecreate(\Doctrine\DBAL\Connection $connection, string $table): void
-{
+function migrateViaSqliteRecreate(
+    \Doctrine\DBAL\Connection $connection,
+    \Doctrine\DBAL\Platforms\AbstractPlatform $platform,
+    string $table,
+    string $quotedTable
+): void {
     $tmpTable = $table.'_migration_tmp';
+    $quotedTmp = $platform->quoteSingleIdentifier($tmpTable);
 
     // Fetch the original CREATE TABLE statement to clone the schema.
     $createSql = $connection->fetchOne(
@@ -248,39 +284,68 @@ function migrateViaSqliteRecreate(\Doctrine\DBAL\Connection $connection, string 
         exit(1);
     }
 
-    // Create a temporary table with `data_serialized` instead of `data`.
-    $tmpCreate = str_replace(
-        '"'.$table.'"',
-        '"'.$tmpTable.'"',
-        str_replace($table, $tmpTable, $createSql)
+    // Create a temporary table named $tmpTable.
+    // Replace only the table name in the CREATE TABLE header (first occurrence).
+    $tmpCreate = preg_replace(
+        '/^(CREATE\s+TABLE\s+)((?:"[^"]*"|`[^`]*`|\[[^\]]*\]|\S+))(\s*\()/i',
+        '$1'.$quotedTmp.'$3',
+        $createSql,
+        1
     );
-    // Rename the data column definition to data_serialized in the DDL.
-    $tmpCreate = preg_replace('/\bdata\b/', 'data_serialized', $tmpCreate, 1);
+
+    // Rename the `data` column definition to `data_serialized` in the DDL.
+    // Match only a quoted or unquoted column named exactly "data" at the start of a column definition.
+    $tmpCreate = preg_replace(
+        '/(?<=\(|,)\s*("data"|`data`|\bdata\b)(?=\s)/i',
+        ' "data_serialized"',
+        $tmpCreate,
+        1
+    );
 
     $connection->executeStatement($tmpCreate);
 
     // Copy all data into the temporary table.
-    $cols = $connection->fetchAllAssociative(sprintf('PRAGMA table_info(%s)', $table));
-    $colList = implode(', ', array_map(static fn (array $c) => '"'.$c['name'].'"', $cols));
-    $connection->executeStatement(sprintf('INSERT INTO "%s" SELECT %s FROM "%s"', $tmpTable, $colList, $table));
+    $cols = $connection->fetchAllAssociative(sprintf('PRAGMA table_info(%s)', $quotedTable));
+    $colList = implode(', ', array_map(
+        static fn (array $c) => $platform->quoteSingleIdentifier($c['name']),
+        $cols
+    ));
+    $connection->executeStatement(sprintf('INSERT INTO %s SELECT %s FROM %s', $quotedTmp, $colList, $quotedTable));
 
     // Drop the original table.
-    $connection->executeStatement(sprintf('DROP TABLE "%s"', $table));
+    $connection->executeStatement(sprintf('DROP TABLE %s', $quotedTable));
 
     // Rename the tmp table back.
-    $connection->executeStatement(sprintf('ALTER TABLE "%s" RENAME TO "%s"', $tmpTable, $table));
+    $connection->executeStatement(sprintf('ALTER TABLE %s RENAME TO %s', $quotedTmp, $quotedTable));
 
     // Add the new `data` (JSON) column.
-    $connection->executeStatement(sprintf('ALTER TABLE "%s" ADD COLUMN data TEXT DEFAULT NULL', $table));
+    $clobType = $platform->getClobTypeDeclarationSQL([]);
+    $connection->executeStatement(sprintf(
+        'ALTER TABLE %s ADD COLUMN %s %s DEFAULT NULL',
+        $quotedTable,
+        $platform->quoteSingleIdentifier('data'),
+        $clobType
+    ));
 
     // Migrate data.
-    $rows = $connection->fetchAllAssociative(sprintf('SELECT id, data_serialized FROM "%s" WHERE data_serialized IS NOT NULL', $table));
+    $qData = $platform->quoteSingleIdentifier('data');
+    $qDataSerialized = $platform->quoteSingleIdentifier('data_serialized');
+    $qId = $platform->quoteSingleIdentifier('id');
+
+    $rows = $connection->fetchAllAssociative(
+        sprintf('SELECT %s, %s FROM %s WHERE %s IS NOT NULL', $qId, $qDataSerialized, $quotedTable, $qDataSerialized)
+    );
+    $converted = 0;
     foreach ($rows as $row) {
         $deserialized = @unserialize($row['data_serialized'], ['allowed_classes' => false]);
         if (false !== $deserialized || 'b:0;' === $row['data_serialized']) {
             try {
                 $json = json_encode($deserialized, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-                $connection->executeStatement(sprintf('UPDATE "%s" SET data = ? WHERE id = ?', $table), [$json, $row['id']]);
+                $connection->executeStatement(
+                    sprintf('UPDATE %s SET %s = ? WHERE %s = ?', $quotedTable, $qData, $qId),
+                    [$json, $row['id']]
+                );
+                ++$converted;
             } catch (\JsonException) {
                 fwrite(STDERR, sprintf("  Warning: could not JSON-encode row id=%s – skipping.\n", $row['id']));
             }
@@ -289,17 +354,26 @@ function migrateViaSqliteRecreate(\Doctrine\DBAL\Connection $connection, string 
         }
     }
 
-    echo sprintf("  SQLite migration complete (%d row(s) converted).\n", count($rows));
+    echo sprintf("  SQLite migration complete (%d row(s) converted).\n", $converted);
 }
 
 /**
  * Optionally drop the legacy `data_serialized` column.
  */
-function finalize(\Doctrine\DBAL\Connection $connection, string $table, bool $dropLegacy): void
-{
+function finalize(
+    \Doctrine\DBAL\Connection $connection,
+    \Doctrine\DBAL\Platforms\AbstractPlatform $platform,
+    string $table,
+    string $quotedTable,
+    bool $dropLegacy
+): void {
     if ($dropLegacy) {
         echo "Dropping legacy column 'data_serialized'...\n";
-        $connection->executeStatement(sprintf('ALTER TABLE %s DROP COLUMN data_serialized', $table));
+        $connection->executeStatement(sprintf(
+            'ALTER TABLE %s DROP COLUMN %s',
+            $quotedTable,
+            $platform->quoteSingleIdentifier('data_serialized')
+        ));
         echo "  Done.\n";
     } else {
         echo "\nMigration complete.\n";
@@ -308,3 +382,4 @@ function finalize(\Doctrine\DBAL\Connection $connection, string $table, bool $dr
         echo sprintf("  ALTER TABLE %s DROP COLUMN data_serialized;\n", $table);
     }
 }
+
