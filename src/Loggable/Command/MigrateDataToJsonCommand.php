@@ -12,8 +12,9 @@ declare(strict_types=1);
 namespace Gedmo\Loggable\Command;
 
 use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\DriverManager;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
+use Doctrine\Persistence\ManagerRegistry;
+use Gedmo\Loggable\LogEntryInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -44,19 +45,19 @@ final class MigrateDataToJsonCommand extends Command
     private const SQLITE_DATA_COLUMN_PATTERN = '/(?<=\\(|,)\\s*("data"|`data`|\\[data\\]|(?<![a-zA-Z0-9_])data(?![a-zA-Z0-9_]))(?=\\s)/i';
 
     private ?Connection $connection;
+    private ?ManagerRegistry $managerRegistry;
 
-    public function __construct(?Connection $connection = null)
+    public function __construct(?Connection $connection = null, ?ManagerRegistry $managerRegistry = null)
     {
         parent::__construct();
 
         $this->connection = $connection;
+        $this->managerRegistry = $managerRegistry;
     }
 
     protected function configure(): void
     {
         $this
-            ->addOption('dsn', null, InputOption::VALUE_OPTIONAL, 'DBAL DSN. Optional when using injected DBAL connection or DATABASE_URL env var.')
-            ->addOption('table', null, InputOption::VALUE_REQUIRED, 'Name of the log entry table.', 'ext_log_entries')
             ->addOption('batch-size', null, InputOption::VALUE_REQUIRED, 'Rows per round-trip.', '500')
             ->addOption('drop-legacy', null, InputOption::VALUE_NONE, 'Drop the data_serialized column after successful migration.')
         ;
@@ -64,7 +65,6 @@ final class MigrateDataToJsonCommand extends Command
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $table = (string) $input->getOption('table');
         $batchSize = (int) $input->getOption('batch-size');
         $dropLegacy = (bool) $input->getOption('drop-legacy');
 
@@ -77,23 +77,47 @@ final class MigrateDataToJsonCommand extends Command
         $connection = $this->connection;
 
         if (null === $connection) {
-            $dsn = (string) ($input->getOption('dsn') ?: (getenv('DATABASE_URL') ?: ''));
+            $output->writeln('<error>No DB connection available. Register this command with an injected Doctrine DBAL Connection.</error>');
 
-            if ('' === $dsn) {
-                $output->writeln('<error>No DB connection available. Provide --dsn, set DATABASE_URL, or register this command with an injected Doctrine DBAL Connection.</error>');
-
-                return self::FAILURE;
-            }
-
-            try {
-                $connection = DriverManager::getConnection(['url' => $dsn]);
-                $connection->connect();
-            } catch (\Throwable $e) {
-                $output->writeln(sprintf('<error>Could not connect to the database: %s</error>', $e->getMessage()));
-
-                return self::FAILURE;
-            }
+            return self::FAILURE;
         }
+
+        $tables = $this->resolveLogEntryTables($connection);
+
+        if ([] === $tables) {
+            $output->writeln('<error>Could not resolve any ORM log entry table from Doctrine metadata for the injected connection.</error>');
+
+            return self::FAILURE;
+        }
+
+        $output->writeln(sprintf(
+            'Resolved %d log entry table(s): %s',
+            count($tables),
+            implode(', ', array_map(static fn (string $table): string => sprintf("'%s'", $table), $tables))
+        ));
+
+        try {
+            foreach ($tables as $table) {
+                $this->migrateTable($connection, $table, $batchSize, $dropLegacy, $output);
+            }
+        } catch (\Throwable $e) {
+            $output->writeln(sprintf('<error>%s</error>', $e->getMessage()));
+
+            return self::FAILURE;
+        }
+
+        return self::SUCCESS;
+    }
+
+    private function migrateTable(
+        Connection $connection,
+        string $table,
+        int $batchSize,
+        bool $dropLegacy,
+        OutputInterface $output
+    ): void {
+        $output->writeln('');
+        $output->writeln(sprintf("Migrating table '%s'...", $table));
 
         $platform = $connection->getDatabasePlatform();
         $schemaManager = method_exists($connection, 'createSchemaManager')
@@ -108,9 +132,7 @@ final class MigrateDataToJsonCommand extends Command
         $hasDataSerialized = in_array('data_serialized', $columnNames, true);
 
         if (!$hasData && !$hasDataSerialized) {
-            $output->writeln(sprintf("<error>Neither 'data' nor 'data_serialized' column found in table '%s'. Nothing to migrate.</error>", $table));
-
-            return self::FAILURE;
+            throw new \RuntimeException(sprintf("Neither 'data' nor 'data_serialized' column found in table '%s'. Nothing to migrate.", $table));
         }
 
         $platformName = strtolower(get_class($platform));
@@ -123,7 +145,7 @@ final class MigrateDataToJsonCommand extends Command
                 $this->migrateViaSqliteRecreate($connection, $platform, $table, $quotedTable, $output);
                 $this->finalize($connection, $platform, $table, $quotedTable, $dropLegacy, $output);
 
-                return self::SUCCESS;
+                return;
             }
 
             $connection->executeStatement(sprintf(
@@ -134,9 +156,9 @@ final class MigrateDataToJsonCommand extends Command
             ));
             $output->writeln('  Done.');
         } elseif ($hasDataSerialized && !$hasData) {
-            $output->writeln("Step 1: Column 'data_serialized' already exists; skipping rename.");
+            $output->writeln(sprintf("Step 1: Column 'data_serialized' already exists in table '%s'; skipping rename.", $table));
         } else {
-            $output->writeln("Step 1: Both 'data' and 'data_serialized' columns exist; assuming rename was already performed.");
+            $output->writeln(sprintf("Step 1: Both 'data' and 'data_serialized' columns exist in table '%s'; assuming rename was already performed.", $table));
         }
 
         $columnsAfterRename = array_keys($schemaManager->listTableColumns($table));
@@ -151,16 +173,53 @@ final class MigrateDataToJsonCommand extends Command
             ));
             $output->writeln('  Done.');
         } else {
-            $output->writeln("Step 2: Column 'data' already exists; skipping ADD COLUMN.");
+            $output->writeln(sprintf("Step 2: Column 'data' already exists in table '%s'; skipping ADD COLUMN.", $table));
         }
 
-        $output->writeln('Step 3: Converting serialized data to JSON...');
+        $output->writeln(sprintf("Step 3: Converting serialized data to JSON in table '%s'...", $table));
         $converted = $this->convertRows($connection, $platform, $quotedTable, $batchSize, $output);
         $output->writeln(sprintf('  Converted %d row(s).', $converted));
 
         $this->finalize($connection, $platform, $table, $quotedTable, $dropLegacy, $output);
+    }
 
-        return self::SUCCESS;
+    /**
+     * @return list<string>
+     */
+    private function resolveLogEntryTables(Connection $connection): array
+    {
+        if (null === $this->managerRegistry) {
+            return [];
+        }
+
+        $tables = [];
+
+        foreach ($this->managerRegistry->getManagers() as $manager) {
+            if (!method_exists($manager, 'getConnection') || $manager->getConnection() !== $connection) {
+                continue;
+            }
+
+            $allMetadata = $manager->getMetadataFactory()->getAllMetadata();
+
+            foreach ($allMetadata as $metadata) {
+                if (!method_exists($metadata, 'getTableName')) {
+                    continue;
+                }
+
+                $className = $metadata->getName();
+                if (!is_a($className, LogEntryInterface::class, true)) {
+                    continue;
+                }
+
+                if (property_exists($metadata, 'isMappedSuperclass') && $metadata->isMappedSuperclass) {
+                    continue;
+                }
+
+                $tables[$metadata->getTableName()] = true;
+            }
+        }
+
+        return array_keys($tables);
     }
 
     private function convertRows(

@@ -251,10 +251,10 @@ $repo->revert($article, 2);
 
 ## Migrating Existing Serialized Data to JSON
 
-If you have an existing `ext_log_entries` table (or a custom log entry table) with data stored in the old
+If you have an existing `ext_log_entries` table (or custom ORM log entry tables) with data stored in the old
 PHP `serialize()` format, you need to migrate it to JSON before using `doctrine/dbal` 4.0 or later.
 
-The project provides a standalone migration script at `bin/migrate-loggable-data-to-json.php`. The script:
+The project provides a Symfony console command for this migration. The command:
 
 1. Renames the existing `data` column to `data_serialized` (so no existing data is lost).
 2. Adds a new `data` column with a JSON-compatible type.
@@ -265,27 +265,19 @@ The project provides a standalone migration script at `bin/migrate-loggable-data
 
 ```bash
 php bin/console gedmo:loggable:migrate-data-to-json \
-    --table="ext_log_entries" \
     [--batch-size=500] \
     [--drop-legacy]
 ```
 
-When this command is registered in your Symfony app, it uses the configured Doctrine DBAL connection,
-so you do not need to pass credentials on the command line.
+The command uses the injected Doctrine DBAL connection and resolves the mapped ORM log entry table(s)
+from Doctrine metadata, so you do not need to pass credentials or table names on the command line.
 
-### Standalone usage
-
-```bash
-php bin/migrate-loggable-data-to-json.php \
-    --table="ext_log_entries" \
-    [--batch-size=500] \
-    [--drop-legacy]
-```
+> [!NOTE]
+> Symfony does not automatically discover command services from vendor packages by attribute alone.
+> If you integrate this library directly, register the command as a service yourself or use a Symfony bundle/recipe that imports vendor services for you.
 
 | Option | Description |
 |---|---|
-| `--dsn` | DBAL-compatible DSN string. Optional when the command receives an injected Doctrine connection or when `DATABASE_URL` is set. |
-| `--table` | Name of the log entry table (default: `ext_log_entries`). |
 | `--batch-size` | Number of rows to process per database round-trip (default: `500`). |
 | `--drop-legacy` | Drop the `data_serialized` backup column automatically after a successful migration. Omit this flag if you want to keep the backup column for manual verification first. |
 
