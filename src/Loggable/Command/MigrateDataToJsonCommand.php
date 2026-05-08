@@ -199,9 +199,8 @@ final class MigrateDataToJsonCommand extends Command
                     continue;
                 }
 
-                $deserialized = unserialize($serialized, ['allowed_classes' => false]);
-
-                if (false === $deserialized && 'b:0;' !== $serialized) {
+                [$ok, $deserialized] = $this->safeUnserialize($serialized);
+                if (!$ok) {
                     $output->writeln(sprintf('  <comment>Warning: could not unserialize row id=%s – skipping.</comment>', $row['id']));
                     continue;
                 }
@@ -288,8 +287,8 @@ final class MigrateDataToJsonCommand extends Command
         );
         $converted = 0;
         foreach ($rows as $row) {
-            $deserialized = unserialize($row['data_serialized'], ['allowed_classes' => false]);
-            if (false !== $deserialized || 'b:0;' === $row['data_serialized']) {
+            [$ok, $deserialized] = $this->safeUnserialize($row['data_serialized']);
+            if ($ok) {
                 try {
                     $json = json_encode($deserialized, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
                     $connection->executeStatement(
@@ -333,5 +332,31 @@ final class MigrateDataToJsonCommand extends Command
         $output->writeln("The original data is still available in the 'data_serialized' column.");
         $output->writeln('Once you have verified the migration, you can drop it:');
         $output->writeln(sprintf('  ALTER TABLE %s DROP COLUMN data_serialized;', $table));
+    }
+
+    /**
+     * @return array{0: bool, 1: mixed}
+     */
+    private function safeUnserialize(string $serialized): array
+    {
+        set_error_handler(static function (): bool {
+            return true;
+        });
+
+        try {
+            $deserialized = unserialize($serialized, ['allowed_classes' => false]);
+        } catch (\Throwable) {
+            restore_error_handler();
+
+            return [false, null];
+        }
+
+        restore_error_handler();
+
+        if (false === $deserialized && 'b:0;' !== $serialized) {
+            return [false, null];
+        }
+
+        return [true, $deserialized];
     }
 }
