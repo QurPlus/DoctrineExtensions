@@ -43,6 +43,7 @@ final class MigrateDataToJsonCommand extends Command
      * Prevents matching identifiers like `data_type`.
      */
     private const SQLITE_DATA_COLUMN_PATTERN = '/(?<=\\(|,)\\s*("data"|`data`|\\[data\\]|(?<![a-zA-Z0-9_])data(?![a-zA-Z0-9_]))(?=\\s)/i';
+    private const CONNECTION_IDENTITY_KEYS = ['url', 'driver', 'host', 'port', 'dbname', 'path', 'memory', 'unix_socket'];
 
     private Connection $connection;
     private ?ManagerRegistry $managerRegistry;
@@ -191,12 +192,7 @@ final class MigrateDataToJsonCommand extends Command
                 continue;
             }
 
-            try {
-                $managerConnection = $manager->getConnection();
-            } catch (\Throwable) {
-                continue;
-            }
-
+            $managerConnection = $manager->getConnection();
             if (!$managerConnection instanceof Connection) {
                 continue;
             }
@@ -248,7 +244,7 @@ final class MigrateDataToJsonCommand extends Command
         $params = $connection->getParams();
         $identity = [];
 
-        foreach (['url', 'driver', 'host', 'port', 'dbname', 'path', 'memory', 'unix_socket'] as $key) {
+        foreach (self::CONNECTION_IDENTITY_KEYS as $key) {
             if (array_key_exists($key, $params)) {
                 $identity[$key] = $params[$key];
             }
