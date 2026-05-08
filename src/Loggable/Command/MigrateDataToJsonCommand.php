@@ -224,7 +224,7 @@ final class MigrateDataToJsonCommand extends Command
 
     private function isSameConnection(Connection $first, Connection $second): bool
     {
-        return $first === $second || $first->getParams() == $second->getParams();
+        return $first === $second || $first->getParams() === $second->getParams();
     }
 
     private function convertRows(
