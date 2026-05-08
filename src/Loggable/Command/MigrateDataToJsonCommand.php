@@ -21,6 +21,23 @@ use Symfony\Component\Console\Output\OutputInterface;
 
 final class MigrateDataToJsonCommand extends Command
 {
+    /**
+     * Matches the CREATE TABLE header and captures the table identifier as group 2.
+     *
+     * Supported identifier formats:
+     * - "quoted"
+     * - `backticked`
+     * - [bracketed]
+     * - unquoted_identifier
+     */
+    private const SQLITE_CREATE_TABLE_HEADER_PATTERN = '/^(CREATE\\s+TABLE\\s+)((?:"[^"]*"|`[^`]*`|\\[[^\\]]*\\]|[a-zA-Z_][a-zA-Z0-9_]*))(\\s*\\()/i';
+
+    /**
+     * Matches the `data` column identifier at a column-definition boundary.
+     * Prevents matching identifiers like `data_type`.
+     */
+    private const SQLITE_DATA_COLUMN_PATTERN = '/(?<=\\(|,)\\s*("data"|`data`|\\[data\\]|(?<![a-zA-Z0-9_])data(?![a-zA-Z0-9_]))(?=\\s)/i';
+
     protected static $defaultName = 'gedmo:loggable:migrate-data-to-json';
     protected static $defaultDescription = 'Migrate Loggable data column from PHP serialized values to JSON.';
 
@@ -79,7 +96,7 @@ final class MigrateDataToJsonCommand extends Command
         $platform = $connection->getDatabasePlatform();
         $schemaManager = method_exists($connection, 'createSchemaManager')
             ? $connection->createSchemaManager()
-            : $connection->getSchemaManager(); // DBAL 3 compat
+            : $connection->getSchemaManager(); // DBAL 3 fallback
 
         $quotedTable = $platform->quoteSingleIdentifier($table);
         $columns = $schemaManager->listTableColumns($table);
@@ -229,14 +246,14 @@ final class MigrateDataToJsonCommand extends Command
         }
 
         $tmpCreate = preg_replace(
-            '/^(CREATE\\s+TABLE\\s+)((?:"[^"]*"|`[^`]*`|\\[[^\\]]*\\]|[a-zA-Z_][a-zA-Z0-9_]*))(\\s*\\()/i',
+            self::SQLITE_CREATE_TABLE_HEADER_PATTERN,
             '$1'.$quotedTmp.'$3',
             $createSql,
             1
         );
 
         $tmpCreate = preg_replace(
-            '/(?<=\\(|,)\\s*("data"|`data`|\\[data\\]|(?<![a-zA-Z0-9_])data(?![a-zA-Z0-9_]))(?=\\s)/i',
+            self::SQLITE_DATA_COLUMN_PATTERN,
             ' "data_serialized"',
             $tmpCreate,
             1
