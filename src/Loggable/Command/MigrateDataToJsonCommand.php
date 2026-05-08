@@ -14,11 +14,16 @@ namespace Gedmo\Loggable\Command;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
 use Doctrine\DBAL\Platforms\AbstractPlatform;
+use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
+#[AsCommand(
+    name: 'gedmo:loggable:migrate-data-to-json',
+    description: 'Migrate Loggable data column from PHP serialized values to JSON.',
+)]
 final class MigrateDataToJsonCommand extends Command
 {
     /**
@@ -38,9 +43,6 @@ final class MigrateDataToJsonCommand extends Command
      */
     private const SQLITE_DATA_COLUMN_PATTERN = '/(?<=\\(|,)\\s*("data"|`data`|\\[data\\]|(?<![a-zA-Z0-9_])data(?![a-zA-Z0-9_]))(?=\\s)/i';
 
-    protected static $defaultName = 'gedmo:loggable:migrate-data-to-json';
-    protected static $defaultDescription = 'Migrate Loggable data column from PHP serialized values to JSON.';
-
     private ?Connection $connection;
 
     public function __construct(?Connection $connection = null)
@@ -53,7 +55,7 @@ final class MigrateDataToJsonCommand extends Command
     protected function configure(): void
     {
         $this
-            ->addOption('dsn', null, InputOption::VALUE_REQUIRED, 'DBAL DSN. Optional when using injected DBAL connection or DATABASE_URL env var.')
+            ->addOption('dsn', null, InputOption::VALUE_OPTIONAL, 'DBAL DSN. Optional when using injected DBAL connection or DATABASE_URL env var.')
             ->addOption('table', null, InputOption::VALUE_REQUIRED, 'Name of the log entry table.', 'ext_log_entries')
             ->addOption('batch-size', null, InputOption::VALUE_REQUIRED, 'Rows per round-trip.', '500')
             ->addOption('drop-legacy', null, InputOption::VALUE_NONE, 'Drop the data_serialized column after successful migration.')
