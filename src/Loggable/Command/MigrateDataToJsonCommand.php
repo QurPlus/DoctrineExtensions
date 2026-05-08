@@ -44,10 +44,10 @@ final class MigrateDataToJsonCommand extends Command
      */
     private const SQLITE_DATA_COLUMN_PATTERN = '/(?<=\\(|,)\\s*("data"|`data`|\\[data\\]|(?<![a-zA-Z0-9_])data(?![a-zA-Z0-9_]))(?=\\s)/i';
 
-    private ?Connection $connection;
+    private Connection $connection;
     private ?ManagerRegistry $managerRegistry;
 
-    public function __construct(?Connection $connection = null, ?ManagerRegistry $managerRegistry = null)
+    public function __construct(Connection $connection, ?ManagerRegistry $managerRegistry = null)
     {
         parent::__construct();
 
@@ -74,15 +74,7 @@ final class MigrateDataToJsonCommand extends Command
             return self::FAILURE;
         }
 
-        $connection = $this->connection;
-
-        if (null === $connection) {
-            $output->writeln('<error>No DB connection available. Register this command with an injected Doctrine DBAL Connection.</error>');
-
-            return self::FAILURE;
-        }
-
-        $tables = $this->resolveLogEntryTables($connection);
+        $tables = $this->resolveLogEntryTables($this->connection);
 
         if ([] === $tables) {
             $output->writeln('<error>Could not resolve any ORM log entry table from Doctrine metadata for the injected connection.</error>');
@@ -98,7 +90,7 @@ final class MigrateDataToJsonCommand extends Command
 
         try {
             foreach ($tables as $table) {
-                $this->migrateTable($connection, $table, $batchSize, $dropLegacy, $output);
+                $this->migrateTable($this->connection, $table, $batchSize, $dropLegacy, $output);
             }
         } catch (\Throwable $e) {
             $output->writeln(sprintf('<error>%s</error>', $e->getMessage()));
@@ -199,7 +191,16 @@ final class MigrateDataToJsonCommand extends Command
                 continue;
             }
 
-            $managerConnection = $manager->getConnection();
+            try {
+                $managerConnection = $manager->getConnection();
+            } catch (\Throwable) {
+                continue;
+            }
+
+            if (!$managerConnection instanceof Connection) {
+                continue;
+            }
+
             if (!$this->isSameConnection($managerConnection, $connection)) {
                 continue;
             }
