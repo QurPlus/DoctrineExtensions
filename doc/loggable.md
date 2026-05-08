@@ -273,7 +273,7 @@ The command uses the injected Doctrine DBAL connection and resolves the mapped O
 from Doctrine metadata, so you do not need to pass credentials or table names on the command line.
 
 > [!NOTE]
-> Symfony does not automatically discover command services from vendor packages by attribute alone.
+> Symfony does not automatically discover command services from vendor packages by the `#[AsCommand]` attribute alone.
 > If you integrate this library directly, register the command as a service yourself or use a Symfony bundle/recipe that imports vendor services for you. For example:
 >
 > ```yaml
