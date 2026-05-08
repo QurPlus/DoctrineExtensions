@@ -185,7 +185,8 @@ final class MigrateDataToJsonCommand extends Command
             return [];
         }
 
-        $tables = [];
+        $connectionIdentity = $this->getConnectionIdentity($connection);
+        $tablesByName = [];
 
         foreach ($this->managerRegistry->getManagers() as $manager) {
             if (!method_exists($manager, 'getConnection')) {
@@ -197,7 +198,7 @@ final class MigrateDataToJsonCommand extends Command
                 continue;
             }
 
-            if (!$this->isSameConnection($managerConnection, $connection)) {
+            if ($managerConnection !== $connection && $this->getConnectionIdentity($managerConnection) !== $connectionIdentity) {
                 continue;
             }
 
@@ -217,23 +218,11 @@ final class MigrateDataToJsonCommand extends Command
                     continue;
                 }
 
-                $tables[$metadata->getTableName()] = true;
+                $tablesByName[$metadata->getTableName()] = true;
             }
         }
 
-        return array_keys($tables);
-    }
-
-    private function isSameConnection(Connection $first, Connection $second): bool
-    {
-        if ($first === $second) {
-            return true;
-        }
-
-        $firstIdentity = $this->getConnectionIdentity($first);
-        $secondIdentity = $this->getConnectionIdentity($second);
-
-        return $firstIdentity === $secondIdentity;
+        return array_keys($tablesByName);
     }
 
     /**
