@@ -198,7 +198,7 @@ final class MigrateDataToJsonCommand extends Command
                 continue;
             }
 
-            if ($managerConnection !== $connection && $this->getConnectionIdentity($managerConnection) !== $connectionIdentity) {
+            if (!$this->isSameConnection($managerConnection, $connection, $connectionIdentity)) {
                 continue;
             }
 
@@ -223,6 +223,14 @@ final class MigrateDataToJsonCommand extends Command
         }
 
         return array_keys($tablesByName);
+    }
+
+    /**
+     * @param array<string, mixed> $connectionIdentity
+     */
+    private function isSameConnection(Connection $first, Connection $second, array $connectionIdentity): bool
+    {
+        return $first === $second || $this->getConnectionIdentity($first) === $connectionIdentity;
     }
 
     /**
