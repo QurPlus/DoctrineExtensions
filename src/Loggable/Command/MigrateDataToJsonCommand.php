@@ -215,16 +215,35 @@ final class MigrateDataToJsonCommand extends Command
                     continue;
                 }
 
-                $tables[] = $metadata->getTableName();
+                $tables[$metadata->getTableName()] = true;
             }
         }
 
-        return array_values(array_unique($tables));
+        return array_keys($tables);
     }
 
     private function isSameConnection(Connection $first, Connection $second): bool
     {
-        return $first === $second || $first->getParams() === $second->getParams();
+        return $first === $second || $this->getConnectionIdentity($first) === $this->getConnectionIdentity($second);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function getConnectionIdentity(Connection $connection): array
+    {
+        $params = $connection->getParams();
+        $identity = [];
+
+        foreach (['url', 'driver', 'host', 'port', 'dbname', 'path', 'memory', 'unix_socket'] as $key) {
+            if (array_key_exists($key, $params)) {
+                $identity[$key] = $params[$key];
+            }
+        }
+
+        ksort($identity);
+
+        return $identity;
     }
 
     private function convertRows(
