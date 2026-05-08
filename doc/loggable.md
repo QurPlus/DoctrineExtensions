@@ -261,11 +261,22 @@ The project provides a standalone migration script at `bin/migrate-loggable-data
 3. Reads each row, calls `unserialize()` on the old value and `json_encode()` on the result, and writes it into the new column.
 4. Optionally drops the `data_serialized` backup column automatically when `--drop-legacy` is passed. Without this flag the column is kept so you can verify the migration manually before dropping it.
 
-### Usage
+### Usage (Symfony command)
+
+```bash
+php bin/console gedmo:loggable:migrate-data-to-json \
+    --table="ext_log_entries" \
+    [--batch-size=500] \
+    [--drop-legacy]
+```
+
+When this command is registered in your Symfony app, it uses the configured Doctrine DBAL connection,
+so you do not need to pass credentials on the command line.
+
+### Standalone usage
 
 ```bash
 php bin/migrate-loggable-data-to-json.php \
-    --dsn="mysql://user:password@localhost/mydb" \
     --table="ext_log_entries" \
     [--batch-size=500] \
     [--drop-legacy]
@@ -273,7 +284,7 @@ php bin/migrate-loggable-data-to-json.php \
 
 | Option | Description |
 |---|---|
-| `--dsn` | DBAL-compatible DSN string (**required**). |
+| `--dsn` | DBAL-compatible DSN string. Optional when the command receives an injected Doctrine connection or when `DATABASE_URL` is set. |
 | `--table` | Name of the log entry table (default: `ext_log_entries`). |
 | `--batch-size` | Number of rows to process per database round-trip (default: `500`). |
 | `--drop-legacy` | Drop the `data_serialized` backup column automatically after a successful migration. Omit this flag if you want to keep the backup column for manual verification first. |
@@ -314,4 +325,3 @@ If you prefer to handle the migration yourself, the steps are:
    ```sql
    ALTER TABLE ext_log_entries DROP COLUMN data_serialized;
    ```
-
